@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,16 +21,19 @@ const run = (meta) => {
   const dir = mkdtempSync(join(tmpdir(), "unslop-story-"));
   const file = join(dir, "story.html");
   writeFileSync(file, story(meta));
-  // 20s is plenty to get past the meta checks; on a machine with Playwright
-  // installed a valid story would keep rendering after that, so a timeout
-  // kill there still proves the meta was accepted.
-  return spawnSync(process.execPath, [script, file, join(dir, "out.mp4")], { encoding: "utf8", timeout: 20_000 });
+  try {
+    return spawnSync(process.execPath, [script, file, "--check"], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 };
 
-// Passing this means the script got past the meta checks. It may then fail
-// at the ffmpeg or Playwright check on a machine without them, or be killed
-// by the timeout while rendering, or finish with a saved video — all fine.
-const pastMeta = (result) => !STEPS_ERROR.test(result.stderr ?? "") && !FRAME_ERROR.test(result.stderr ?? "");
+const pastMeta = (result) => {
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.deepEqual(parsed.steps, ["Spacing", "Color"]);
+  assert.deepEqual(parsed.frame, [0, 0, 960]);
+  return true;
+};
 
 test("missing unslop-steps meta fails with a clear error", () => {
   const result = run("");
@@ -69,6 +72,10 @@ const badFrames = [
   ["a negative width", "0 0 -960"],
   ["four numbers", "0 0 960 100"],
   ["an empty value", ""],
+  ["an infinite number", "0 0 Infinity"],
+  ["an overflowing offset", "1e309 0 960"],
+  ["an excessive width", "0 0 999999999"],
+  ["a subpixel width", "0 0 1e-300"],
 ];
 
 for (const [label, value] of badFrames) {
@@ -86,4 +93,42 @@ test("a valid unslop-frame is accepted", () => {
 
 test("no unslop-frame tag falls back to the default frame", () => {
   assert.ok(pastMeta(run(goodMeta())), "missing frame tag was rejected");
+});
+
+test("commented and scripted meta tags do not replace actual metadata", () => {
+  assert.ok(pastMeta(run('<!-- <meta name="unslop-steps" content="Wrong"> -->' + '<script>const fake = \'<meta name="unslop-steps" content="Wrong">\';</script>' + goodMeta())));
+});
+
+test("a quoted attribute cannot spoof a real name attribute", () => {
+  assert.ok(pastMeta(run('<meta data-note="name=unslop-steps" content="Wrong">' + goodMeta())));
+});
+
+test("finite values that overflow derived geometry fail", () => {
+  const result = run(goodMeta() + '<meta name="unslop-frame" content="0 -32768 960">');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /oversized|non-finite/);
+});
+
+test("unknown CLI flags fail before dependency startup", () => {
+  const result = spawnSync(process.execPath, [script, "missing.html", "out.mp4", "--wied"], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown option/);
+});
+
+test("a FIFO input is rejected without blocking or launching dependencies", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "unslop-story-fifo-"));
+  try {
+    const file = join(dir, "story.html");
+    if (spawnSync("mkfifo", [file]).status !== 0) { t.skip("Named pipes are unavailable"); return; }
+    const result = spawnSync(process.execPath, [script, file, "--check"], { encoding: "utf8", timeout: 2000, killSignal: "SIGKILL" });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /regular HTML file/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("excessive step counts fail before building a runtime", () => {
+  const result = run(goodMeta(Array(65).fill("Color").join(",")));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /at most 64 steps/);
 });

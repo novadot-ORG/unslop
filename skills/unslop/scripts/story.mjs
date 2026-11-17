@@ -1,16 +1,25 @@
 import { createRequire } from "node:module";
-import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, extname, join, resolve } from "node:path";
-import { resolveStoryFile } from "./story-path.mjs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { startStoryServer } from "./story-server.mjs";
+import { createOutputSession } from "./output.mjs";
+import { closeBrowser, launchBrowser } from "./browser.mjs";
 
-const usage = "usage: node story.mjs <story.html> <out.mp4> [--wide], or node story.mjs <story.html> --play to watch it live in a browser window";
+const usage = "usage: node story.mjs <story.html> <out.mp4> [--wide], or node story.mjs <story.html> --play, or node story.mjs <story.html> --check";
 const args = process.argv.slice(2);
 const [input, out] = args.filter((arg) => !arg.startsWith("--"));
 const wide = args.includes("--wide");
 const play = args.includes("--play");
-if (!input || (!out && !play)) {
+const check = args.includes("--check");
+const unknown = args.find((arg) => arg.startsWith("--") && !["--wide", "--play", "--check"].includes(arg));
+if (unknown) {
+  console.error(`Unknown option: ${unknown}`);
+  process.exit(1);
+}
+if (!input || (!out && !play && !check) || args.filter((arg) => !arg.startsWith("--")).length > 2 ||
+    (play && check) || ((play || check) && out)) {
   console.error(usage);
   process.exit(1);
 }
@@ -24,32 +33,30 @@ async function browserKit() {
       return createRequire(join(process.cwd(), "package.json"))(name);
     } catch {}
   }
-  console.error("Playwright is not installed. In your project, run `npm install -D playwright` followed by `npx playwright install chromium`.");
-  process.exit(1);
-}
-
-if (!play) {
-  try {
-    execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
-  } catch {
-    console.error("ffmpeg is not installed. Install it to render the video, for example `brew install ffmpeg`.");
-    process.exit(1);
-  }
+  throw new Error("Playwright is not installed. In your project, run `npm install -D playwright` followed by `npx playwright install chromium`.");
 }
 
 const file = resolve(input);
 const root = dirname(file);
-const html = readFileSync(file, "utf8");
+let html;
+let inputFd;
+try {
+  inputFd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  if (!fstatSync(inputFd).isFile()) throw new Error("Input must be a regular HTML file.");
+  html = readFileSync(inputFd, "utf8");
+}
+catch (error) { console.error(`Cannot read story: ${error.message}`); process.exit(1); }
+finally { if (inputFd !== undefined) closeSync(inputFd); }
 // A meta tag is valid HTML whatever order its attributes are in and
 // whichever quotes they use, so read the tag first, then its attributes.
 const meta = (name) => {
-  for (const [, attrs] of html.matchAll(/<meta\s+([^>]*)>/gi)) {
-    const get = (attr) =>
-      new RegExp(`(?:^|\\s)${attr}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i")
-        .exec(attrs)
-        ?.slice(1)
-        .find((value) => value !== undefined);
-    if (get("name")?.toLowerCase() === name) return get("content");
+  const markup = html.replace(/<!--[\s\S]*?-->|<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, "");
+  for (const [tag] of markup.matchAll(/<meta\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+    const attrs = new Map();
+    for (const [, key, double, single, bare] of tag.slice(5, -1).matchAll(/([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+      if (!attrs.has(key.toLowerCase())) attrs.set(key.toLowerCase(), double ?? single ?? bare ?? "");
+    }
+    if (attrs.get("name")?.toLowerCase() === name) return attrs.get("content");
   }
   return undefined;
 };
@@ -61,11 +68,16 @@ if (steps.length === 0) {
   console.error('story.html needs <meta name="unslop-steps" content="Spacing, Color, Type"> listing the steps in order');
   process.exit(1);
 }
+if (steps.length > 64 || steps.some((step) => step.length > 200)) {
+  console.error("A story supports at most 64 steps, each at most 200 characters.");
+  process.exit(1);
+}
 const frameRaw = meta("unslop-frame") ?? "0 0 960";
 const frame = frameRaw.split(/\s+/).filter(Boolean);
 const [frameX, frameY, frameWidth] = frame.map(Number);
-if (frame.length !== 3 || frame.some((value) => !Number.isFinite(Number(value))) || frameWidth <= 0) {
-  console.error(`unslop-frame must be three numbers, like "0 0 960", with a width above 0 — got "${frameRaw}"`);
+if (frame.length !== 3 || frame.some((value) => !Number.isFinite(Number(value))) || frameWidth < 1 ||
+    frameWidth > 32768 || Math.abs(frameX) > 32768 || Math.abs(frameY) > 32768) {
+  console.error(`unslop-frame must be three numbers, like "0 0 960", with width from 1 to 32768 and offsets within 32768 — got "${frameRaw}"`);
   process.exit(1);
 }
 const count = (pattern) => html.match(pattern)?.length ?? 0;
@@ -99,6 +111,18 @@ const top = Math.min(0, offsetY) * scale;
 const pageWidth = Math.max(PAGE_WIDTH + padLeft, Math.ceil((FRAME.width - left) / scale) + 2);
 const padRight = pageWidth - PAGE_WIDTH - padLeft;
 const pageHeight = Math.max(900 + padTop, Math.ceil((FRAME.height - top) / scale) + 2);
+if (![scale, left, top, pageWidth, pageHeight].every(Number.isFinite) || pageWidth > 32768 || pageHeight > 32768) {
+  console.error("unslop-frame produces an oversized or non-finite page; use a crop within 32768 pixels.");
+  process.exit(1);
+}
+if (check) {
+  console.log(JSON.stringify({ steps, frame: [frameX, frameY, frameWidth], wide }));
+  process.exit(0);
+}
+if (!play) {
+  try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore", timeout: 5000 }); }
+  catch { console.error("ffmpeg is not installed or did not respond. Install it to render video, for example `brew install ffmpeg`."); process.exit(1); }
+}
 
 const stage = `<!doctype html><html><head><meta charset="utf-8"><style>
   html, body { margin: 0; width: ${FRAME.width}px; height: ${FRAME.height}px; overflow: hidden; background: #111; }
@@ -126,7 +150,7 @@ const stage = `<!doctype html><html><head><meta charset="utf-8"><style>
   .credit { position: absolute; right: 28px; bottom: 24px; z-index: 20; padding: 7px 12px; border-radius: 999px; font: 500 15px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0.01em; color: rgba(255,255,255,0.86); background: rgba(12,12,14,0.62); box-shadow: 0 0 0 1px rgba(255,255,255,0.1); backdrop-filter: blur(8px); }
   iframe { position: absolute; left: ${left}px; top: ${top}px; border: 0; width: ${pageWidth}px; height: ${pageHeight}px; transform-origin: 0 0; transform: scale(${scale}); background: transparent; }
 </style></head><body>
-  <iframe id="page" src="/__story/${encodeURIComponent(file.slice(root.length + 1))}"></iframe>
+  <iframe id="page" src="__story/${encodeURIComponent(file.slice(root.length + 1))}"></iframe>
   <div id="story-layer"></div>
   <div class="credit">unslop by @heydamir</div>
   <script>
@@ -221,8 +245,12 @@ const runtime = `
       const pad = 8 / conf.scale;
       const wrap = put("s-fade", { ...rect(b.left - pad, b.top - pad, b.width + pad * 2, b.height + pad * 2), transitionDelay: index * 70 + "ms" });
       wrap.innerHTML = '<div class="s-box" style="position:absolute;inset:0"></div>' +
-        [["left", "top"], ["right", "top"], ["left", "bottom"], ["right", "bottom"]].map(([x, y]) => '<span class="s-corner" style="position:absolute;' + x + ':-4px;' + y + ':-4px"></span>').join("") +
-        '<span class="s-tag" style="position:absolute;left:0;top:-40px">' + el.dataset.slop + "</span>";
+        [["left", "top"], ["right", "top"], ["left", "bottom"], ["right", "bottom"]].map(([x, y]) => '<span class="s-corner" style="position:absolute;' + x + ':-4px;' + y + ':-4px"></span>').join("");
+      const tag = window.parent.document.createElement("span");
+      tag.className = "s-tag";
+      Object.assign(tag.style, { position: "absolute", left: "0", top: "-40px" });
+      tag.textContent = el.dataset.slop;
+      wrap.appendChild(tag);
     });
   }
 
@@ -379,127 +407,140 @@ const runtime = `
 })();
 `;
 
-const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".avif": "image/avif", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".woff": "font/woff", ".mp4": "video/mp4" };
-const server = createServer((request, response) => {
-  const path = decodeURIComponent(new URL(request.url, "http://local").pathname);
-  if (path === "/__stage.html") {
-    response.writeHead(200, { "content-type": "text/html" });
-    return response.end(stage);
-  }
-  const target = resolveStoryFile(root, path);
-  if (target === null) {
-    response.writeHead(404);
-    return response.end();
-  }
-  response.writeHead(200, { "content-type": types[extname(target).toLowerCase()] ?? "application/octet-stream" });
-  response.end(readFileSync(target));
-});
-await new Promise((done) => server.listen(0, "127.0.0.1", done));
-const base = `http://127.0.0.1:${server.address().port}`;
-
 const FPS = 60;
 const LENGTH = 10;
-const frames = join(root, ".story-frames");
-if (!play) {
-  rmSync(frames, { recursive: true, force: true });
-  mkdirSync(frames, { recursive: true });
-}
-
-const chrome = [process.env.CHROME_PATH, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((path) => path && existsSync(path));
-const { chromium } = await browserKit();
-const browser = await chromium.launch({ ...(chrome ? { executablePath: chrome } : {}), headless: !play });
-const sleep = (ms) => new Promise((done) => setTimeout(done, Math.max(0, ms)));
-let total = 0;
+let browser;
+let serving;
+let outputs;
+let frames;
+let deadline;
+let timedOut = false;
+const cleanup = () => {
+  if (frames) rmSync(frames, { recursive: true, force: true });
+  outputs?.cleanup();
+};
+process.once("exit", cleanup);
 try {
-  const page = await browser.newPage(play ? { viewport: { width: Math.round(FRAME.width * VIEW), height: Math.round(FRAME.height * VIEW) } } : { viewport: FRAME, deviceScaleFactor: 2 });
-  await page.goto(`${base}/__stage.html`, { waitUntil: "networkidle" });
-  const frame = page.frames().find((item) => item !== page.mainFrame());
-  await frame.waitForLoadState("networkidle");
-  await frame.evaluate(async () => {
-    const families = new Set();
-    for (const sheet of document.styleSheets) {
-      let rules = [];
-      try {
-        rules = [...sheet.cssRules];
-      } catch {}
-      const walk = (list) => list.forEach((rule) => {
-        if (rule.cssRules) walk([...rule.cssRules]);
-        const value = rule.style && rule.style.fontFamily;
-        if (value) value.split(",").forEach((name) => families.add(name.trim().replace(/^["']|["']$/g, "")));
-      });
-      walk(rules);
-    }
-    await Promise.all([...families].flatMap((family) => [400, 500, 600, 700, 800].map((weight) => document.fonts.load(`${weight} 16px "${family}"`).catch(() => null))));
-    await document.fonts.ready;
-  });
-  await frame.addStyleTag({ content: `html { padding: ${padTop}px ${padRight}px 0 ${padLeft}px !important; }` });
-  await frame.addScriptTag({ content: runtime });
-  await frame.evaluate(() => window.__story.install());
-  await page.waitForTimeout(300);
-
-  const slop = await frame.evaluate(() => document.querySelectorAll("[data-slop]").length);
-  const call = (name, value) => () => frame.evaluate(([name, value]) => window.__story[name](value), [name, value]);
-  const plan = [];
-  const at = (time, run) => plan.push({ time, run });
-  let cursor = 0.5;
-  if (slop) {
-    at(cursor, call("show", "audit"));
-    at(cursor + 0.9, call("clear"));
-    cursor += 1.1;
+  const { chromium } = await browserKit();
+  if (!play) {
+    outputs = createOutputSession([resolve(out)], file);
+    frames = mkdtempSync(join(tmpdir(), "unslop-story-frames-"));
   }
-  const blocks = steps.map((name) => (kindOf(name) ? 1.75 : 1.25));
-  const fit = Math.min(1, (LENGTH - cursor - 1.6) / blocks.reduce((sum, block) => sum + block, 0));
-  steps.forEach((name, index) => {
-    const kind = kindOf(name);
-    if (kind) {
-      at(cursor, call("show", kind));
-      at(cursor + 0.35 * fit, call("step", index + 1));
-      at(cursor + 1.35 * fit, call("settle"));
-      at(cursor + 1.7 * fit, call("clear"));
-    } else {
-      at(cursor, call("step", index + 1));
-    }
-    cursor += blocks[index] * fit;
-  });
-  total = cursor + 1.6;
-  plan.sort((a, b) => a.time - b.time);
-
-  if (play) {
-    console.log("playing in the browser window, close it to stop");
-    while (browser.isConnected()) {
-      await frame.evaluate(() => window.__story.reset());
-      await sleep(400);
-      const begin = Date.now();
-      for (const { time, run } of plan) {
-        await sleep(begin + time * 1000 - Date.now());
-        await run();
+  serving = await startStoryServer({ root, file, stage });
+  const base = serving.base;
+  const chrome = [process.env.CHROME_PATH, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((path) => path && existsSync(path));
+  browser = await launchBrowser(chromium, { ...(chrome ? { executablePath: chrome } : {}), headless: !play });
+  if (!play) {
+    deadline = setTimeout(() => {
+      timedOut = true;
+      void closeBrowser(browser).catch(() => {}).finally(() => {
+        cleanup();
+        console.error("Story capture timed out after 120 seconds.");
+        process.exit(1);
+      });
+    }, 120_000);
+    deadline.unref();
+  }
+  const sleep = (ms) => new Promise((done) => setTimeout(done, Math.max(0, ms)));
+  let total = 0;
+  try {
+    const page = await browser.newPage(play ? { viewport: { width: Math.round(FRAME.width * VIEW), height: Math.round(FRAME.height * VIEW) } } : { viewport: FRAME, deviceScaleFactor: 2 });
+    await page.goto(`${base}/__stage.html`, { waitUntil: "networkidle" });
+    const frame = page.frames().find((item) => item !== page.mainFrame());
+    await frame.waitForLoadState("networkidle");
+    await frame.evaluate(async () => {
+      const families = new Set();
+      for (const sheet of document.styleSheets) {
+        let rules = [];
+        try {
+          rules = [...sheet.cssRules];
+        } catch {}
+        const walk = (list) => list.forEach((rule) => {
+          if (rule.cssRules) walk([...rule.cssRules]);
+          const value = rule.style && rule.style.fontFamily;
+          if (value) value.split(",").forEach((name) => families.add(name.trim().replace(/^["']|["']$/g, "")));
+        });
+        walk(rules);
       }
-      await sleep(begin + total * 1000 - Date.now());
+      await Promise.all([...families].flatMap((family) => [400, 500, 600, 700, 800].map((weight) => document.fonts.load(`${weight} 16px "${family}"`).catch(() => null))));
+      await document.fonts.ready;
+    });
+    await frame.addStyleTag({ content: `html { padding: ${padTop}px ${padRight}px 0 ${padLeft}px !important; }` });
+    // Execute our trusted controller through the automation context, retaining
+    // a captured page's script-blocking CSP for its own markup and handlers.
+    await frame.evaluate(runtime);
+    await frame.evaluate(() => window.__story.install());
+    await page.waitForTimeout(300);
+
+    const slop = await frame.evaluate(() => document.querySelectorAll("[data-slop]").length);
+    const call = (name, value) => () => frame.evaluate(([name, value]) => window.__story[name](value), [name, value]);
+    const plan = [];
+    const at = (time, run) => plan.push({ time, run });
+    let cursor = 0.5;
+    if (slop) {
+      at(cursor, call("show", "audit"));
+      at(cursor + 0.9, call("clear"));
+      cursor += 1.1;
     }
-  } else {
-    let next = 0;
-    for (let index = 0; index <= Math.round(total * FPS); index++) {
-      const now = index / FPS;
-      while (next < plan.length && plan[next].time <= now + 1e-6) await plan[next++].run();
-      await frame.evaluate((ms) => window.__story.tick(ms), now * 1000);
-      await page.screenshot({ path: join(frames, `f-${String(index).padStart(5, "0")}.jpg`), type: "jpeg", quality: 92 });
+    const blocks = steps.map((name) => (kindOf(name) ? 1.75 : 1.25));
+    const fit = Math.min(1, (LENGTH - cursor - 1.6) / blocks.reduce((sum, block) => sum + block, 0));
+    steps.forEach((name, index) => {
+      const kind = kindOf(name);
+      if (kind) {
+        at(cursor, call("show", kind));
+        at(cursor + 0.35 * fit, call("step", index + 1));
+        at(cursor + 1.35 * fit, call("settle"));
+        at(cursor + 1.7 * fit, call("clear"));
+      } else {
+        at(cursor, call("step", index + 1));
+      }
+      cursor += blocks[index] * fit;
+    });
+    total = cursor + 1.6;
+    plan.sort((a, b) => a.time - b.time);
+
+    if (play) {
+      console.log("playing in the browser window, close it to stop");
+      while (browser.isConnected()) {
+        await frame.evaluate(() => window.__story.reset());
+        await sleep(400);
+        const begin = Date.now();
+        for (const { time, run } of plan) {
+          await sleep(begin + time * 1000 - Date.now());
+          await run();
+        }
+        await sleep(begin + total * 1000 - Date.now());
+      }
+    } else {
+      let next = 0;
+      for (let index = 0; index <= Math.round(total * FPS); index++) {
+        const now = index / FPS;
+        while (next < plan.length && plan[next].time <= now + 1e-6) await plan[next++].run();
+        await frame.evaluate((ms) => window.__story.tick(ms), now * 1000);
+        await page.screenshot({ path: join(frames, `f-${String(index).padStart(5, "0")}.jpg`), type: "jpeg", quality: 92 });
+      }
     }
+  } catch (error) {
+    if (!play || browser.isConnected()) throw error;
+  } finally {
+    clearTimeout(deadline);
+    try { await closeBrowser(browser); }
+    finally { await serving.close(); }
+  }
+  if (!play) {
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", String(FPS), "-i", join(frames, "f-%05d.jpg"), "-vf", `scale=${FRAME.width * 2}:${FRAME.height * 2}:flags=lanczos`, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "slow", "-movflags", "+faststart", outputs.staged[0]], { timeout: 120_000, killSignal: "SIGKILL" });
+    outputs.commit();
+    console.log(`saved ${resolve(out)}, ${steps.length} steps, ${total.toFixed(1)}s`);
   }
 } catch (error) {
-  if (!play) {
-    rmSync(frames, { recursive: true, force: true });
-    throw error;
-  }
-  if (browser.isConnected()) console.error(error);
+  console.error(timedOut ? "Story capture timed out after 120 seconds." : error.message);
+  process.exitCode = 1;
 } finally {
-  await browser.close().catch(() => {});
-  server.close();
+  clearTimeout(deadline);
+  cleanup();
+  process.off("exit", cleanup);
+  try { await closeBrowser(browser); }
+  catch (error) { console.error(error.message); process.exitCode = 1; }
+  await serving?.close();
 }
-if (play) process.exit(0);
-
-try {
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", String(FPS), "-i", join(frames, "f-%05d.jpg"), "-vf", `scale=${FRAME.width * 2}:${FRAME.height * 2}:flags=lanczos`, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "slow", "-movflags", "+faststart", resolve(out)]);
-} finally {
-  rmSync(frames, { recursive: true, force: true });
-}
-console.log(`saved ${resolve(out)}, ${steps.length} steps, ${total.toFixed(1)}s`);
+process.exit(process.exitCode ?? 0);

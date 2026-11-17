@@ -86,6 +86,30 @@ npx playwright install chromium
 
 Story videos also require ffmpeg installed and available on your PATH.
 
+The snapshot helper accepts `--width`, `--height` and `--timeout` (milliseconds, default `60000`, range `1000`–`120000`). Viewport dimensions are limited to 8192 pixels each and 33,554,432 pixels in total. Validate a story's metadata without launching a browser or requiring ffmpeg with:
+
+```bash
+node skills/unslop/scripts/story.mjs path/to/story.html --check
+```
+
+## Helper security and concurrent runs
+
+Snapshots remove active markup and add a policy that blocks scripts, frames, plugins and form submission in the saved page. Capture still opens the original page in a fresh browser context, and saved styles, images and fonts can retain remote resource URLs. This is a visual capture tool, not a general sandbox for hostile web content.
+
+Story HTML and its JavaScript must be trusted. Keep each story and its public assets in a dedicated directory, using relative asset URLs. The preview server binds to loopback, requires a per-run route token, and serves only the selected HTML and supported public asset types. Hidden files, other HTML, directories and unsupported file types are denied. Permitted JavaScript/CSS assets can still contain sensitive data; a route token does not hide them from the story's own scripts. Workspace files must not be mutated by hostile local processes while rendering.
+
+Each video run owns a unique temporary frame directory and cleans it after completion or a handled failure. Different output paths can render concurrently. Writers to the same output are rejected with an `.unslop-lock` error; existing output is replaced only after the new file is ready. Snapshot HTML and PNG publication is atomic per file, not as a pair. A forced kill or power loss may leave a temporary directory or lock: verify that the writer has stopped before removing the named lock and retrying. Input files, symlink outputs and hardlinks to inputs are protected from accidental overwrite.
+
+## Development checks
+
+```bash
+node --test test/*.test.mjs
+```
+
+The suite includes path/server security, output collision and cleanup, passive snapshot behavior, explicit metadata validation, and concurrent real square/wide video rendering checked with ffprobe. Browser and video integration checks require the optional tools above; inspect the test summary for skipped checks. Automated functional tests do not replace a required Computer Use visual review.
+
+Set `UNSLOP_TEST_ARTIFACT_DIR` to a directory to retain successful square/wide integration videos for visual review. Helper dependencies come from the target project's environment; this repository does not pin or audit that project's complete dependency tree.
+
 ## Use
 
 Open your website repository in Codex and mention `$unslop` with the screen or route you want to improve:
@@ -116,7 +140,7 @@ It audits the screen and proposes a direction before editing. If you have alread
 - **Visuals.** Shows your product instead of a glossy blob. When a hero needs a scene or an object, it uses an available image tool and follows that tool's authorization requirements. If none is available, it can build a product preview in code and include an image prompt in the report. Dashboards and apps rarely need generated images.
 - **Story video.** A square video under 10 seconds of your screen unslopping itself, ready to post. It needs Playwright and ffmpeg.
 
-Try it on the two vibecoded screens in [examples](examples).
+Try it on the screens in [examples](examples).
 
 ## Hire the unslopper
 
