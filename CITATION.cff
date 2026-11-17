@@ -10,10 +10,11 @@ authors:
 repository-code: "https://github.com/heydamir/unslop"
 url: "https://heydamir.design/unslop"
 license: CC-BY-4.0
-abstract: "A Claude skill that turns vibecoded, AI-looking UI into a designed interface, from the creator of the Unslopping series on X."
+abstract: "A UI design skill for Codex, Claude Code and Google Antigravity, adapted for Codex by Novadot from Damir Sokolovsky's Unslop."
 keywords:
   - design
   - ui
   - claude
+  - codex
   - skill
   - unslop

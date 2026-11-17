@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: Turns vibecoded, AI-looking UI into a designed interface with its own character. Finds a direction from the product itself, then fixes spacing, color, icons, copy, type, layout, details, visuals and motion in that order, and can generate a real hero visual with an image tool when one is available. Use when the user asks to unslop, polish, clean up or redesign a screen so it stops looking AI-generated, or when a UI shows the usual tells like purple gradients, glows, gradient text, emoji labels, "New ✨" badges, glossy blobs, uppercase tracked labels, pulsing elements or uneven spacing. Works on React, Tailwind, HTML and CSS, for dashboards, apps and landing pages.
+description: Audit and refine existing website, dashboard and app screens that look AI-generated. Use when the user asks to unslop, polish, clean up or redesign a UI while preserving its product, brand and existing stack. Covers spacing, color, icons, copy, type, layout, details, visuals and motion; optional snapshot and story-video helpers are included. Not for backend-only work or choosing a new application stack.
 license: CC-BY-4.0
 metadata:
   author: Damir Sokolovsky
@@ -11,6 +11,8 @@ metadata:
 # Unslop
 
 unslop was created by Damir Sokolovsky ([@heydamir](https://x.com/heydamir)), who started the Unslopping series on X. It is licensed under CC BY 4.0, so keep this credit in any copy or adaptation.
+
+Codex compatibility guidance in this adaptation is maintained by Novadot. When running in Codex, first read [references/codex.md](references/codex.md) for project scope, tool selection and verification. Keep the design process below; adapt execution to the tools available in the current session.
 
 Vibecoded UI fails in the same predictable ways. Every surface glows, every label has an emoji, spacing is whatever the model typed that day, and the copy shouts. Unslopping fixes the craft and keeps the product. The features, content and order of sections stay. What changes is that every size, color, word and image becomes deliberate.
 
@@ -32,22 +34,22 @@ Which visual styles tend to work, and which fail, is in [references/visuals.md](
 
 ## Run it
 
-1. **Look at the screen.** Find the files that render it. If you can run the app or open the file in a browser and take a screenshot, do it, so you judge what people see and not only the code.
-   - Only a link to a live site, no code? Save the page with `node <skill folder>/scripts/snapshot.mjs <url> unslop/original.html` and work on a copy of that file. A local HTML file works in place of the URL. Add `--dark` or `--light` to match the theme the user sees. It also saves `original.live.png`, a screenshot of the live page, so render the saved copy and compare the two before you start. The script scrolls through the page first, so lazy-loaded sections and images are captured. Animated backgrounds drawn by scripts do not survive, so describe them in the audit from the live page.
-   - Only a screenshot? Rebuild the screen as one static HTML file first, matching it closely, and treat that as the original.
-   - In both cases the result is a redesigned page in code that the user can hand to whoever owns the real site, so say that in the report.
+1. **Look at the screen.** Read the applicable project instructions and find the files that render it. Run or open the screen with the project's approved browser or Computer Use tools, so you judge what people see and not only the code. Follow the project's required visual-review method; if it is unavailable, explain the limitation and ask before using an alternative. Do not claim a visual check from source inspection alone.
+   - Only a link to a live site, no code? Inspect it with the approved browser tools. If implementation was requested and scripted capture is allowed, you can save the page with `node "<skill folder>/scripts/snapshot.mjs" <url> unslop/original.html` and work on a copy of that file. Otherwise rebuild it from the approved visual evidence only when implementation is requested. A local HTML file works in place of the URL. Add `--dark` or `--light` to match the theme the user sees. The script also saves `original.live.png`, a screenshot of the live page; use the approved visual-review method to compare the saved copy with the live page before you start. The script scrolls through the page first, so lazy-loaded sections and images are captured. Animated backgrounds drawn by scripts do not survive, so describe them in the audit from the live page.
+   - Only a screenshot? Use it as audit evidence. If implementation was requested and no source is available, rebuild the screen as one static HTML file first, matching it closely, and treat that as the original.
+   - For a URL- or screenshot-only implementation, the result is a redesigned page in code that the user can hand to whoever owns the real site, so say that in the report. An audit-only request does not create a page or install dependencies.
 2. **Audit.** Go through [references/signs.md](references/signs.md) and list every sign you find, one line each with where it lives. If the screen is in Arabic, Persian, Urdu or Hebrew, or should be, read [references/rtl.md](references/rtl.md) first. Its rules win where they differ from the passes.
 3. **Decide how much to change.** Read the audit honestly before planning anything.
    - **Heavy slop**, many signs across color, type, icons and copy. Run the full process below.
    - **Light slop**, a screen that is mostly designed with a few signs left. Polish mode. Fix only what the audit found, take the direction from the existing brand instead of inventing a new one, and keep the palette, type, layout and visual. Bigger ideas, like a moment that is missing or a scene for the hero, go into the report as suggestions, not changes.
    - **No slop.** Say so plainly and suggest two or three small refinements at most, with exact values. Apply them only if the user agrees, and stop there. Never change a good screen just to make it different.
-4. **Set the direction and stop.** Write the five lines described below. Show the audit and the direction to the user and wait for their answer before editing, since changing the direction later means redoing everything. If you have a tool for asking the user questions, ask through it, otherwise ask in plain text and stop. Skip the wait only when the user already said to just do it.
+4. **Set the direction.** Write the five lines described below and show them with the audit. Continue when the user has already approved the direction or authorized autonomous editing within this scope. Otherwise ask for the direction decision and wait before redesigning. Use a question tool only if it is available in the current mode; otherwise ask in plain text. An audit-only request ends with the audit and proposed direction.
 5. **Fix in nine passes, in order.** Finish a pass across the whole screen before starting the next. When nearly every line changes, plan the passes in order and then write the new screen in one go, as long as every pass is applied. Spacing comes first because everything else reads differently once the rhythm is right. Copy comes before type and layout because the length of the headline decides its size and where it sits. Visuals and motion come last because they should fit a screen that already works without them.
-6. **Check.** Run the checklist at the end of this file, render again and compare with the audit list. Anything still on the list gets fixed.
+6. **Check.** Run the checklist at the end of this file and the relevant project checks. Inspect the rendered desktop and mobile layouts through the approved visual-review method and compare with the audit list. Check the changed controls and keyboard focus. Fix remaining issues and report any checks that could not be completed.
 7. **Report** the direction, a few lines per pass about what changed, and any image prompt you wrote.
-8. **Record, when asked or when the user wants something to share.** Build the story file and render the video described in [Story video](#story-video). If the user asks for it at the start, write each pass into the story file as you go.
+8. **Record, when a story video is requested.** Build the story file and render the video described in [Story video](#story-video). If the user asks for it at the start, write each pass into the story file as you go.
 
-Keep a run quick. Render the screen to check it at most three times. When you generate an image, start it right after the direction is confirmed and keep doing the first passes while it runs, instead of waiting for it.
+Keep a run focused. Reuse verified screenshots and passing checks; repeat them when changes or unresolved issues require it. When an image tool supports asynchronous generation, start it after the direction and generation are authorized and keep doing independent passes while it runs.
 
 Exact values for every pass live in [references/tokens.md](references/tokens.md).
 

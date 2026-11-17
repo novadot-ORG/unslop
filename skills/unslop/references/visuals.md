@@ -51,13 +51,13 @@ Besides whole scenes, generate single objects to place into the interface, like 
 
 ## Generate it
 
-Look for an image generation tool among the tools you have, for example an MCP server for fal, Replicate, OpenAI images, Higgsfield or a design tool. If there is one:
+Look for an image generation tool among the tools available in the session: a built-in tool, an already connected service such as Higgsfield, or an MCP integration for fal, Replicate or OpenAI images. Follow that tool's instructions. If there is one:
 
-- Show the user the prompt, the model and the size, and ask before running, since generation can cost money.
+- Choose the prompt and output size to fit the direction. Follow the tool's authorization requirements and honor approval already given for this generation. Ask only when required information or authorization is missing.
 - Run once. Judge the result against the one sentence and the palette before trying again, and change the prompt rather than rerolling the same one.
 - Save the result into the project's assets, not a temporary URL.
 
-If there is no tool and the screen needs a scene or an object, say so before the Visuals pass and offer to connect one, like an MCP server for fal, Replicate, OpenAI images or Higgsfield, then go on once it is connected. If the user skips it, leave the slot empty and put the prompt in your report, not on the page. The empty slot is a plain surface step of the exact size with the radius of the layout and no text inside, so nothing unfinished can ship by accident. Tell the user which kind of service can generate it and the file name to save it under.
+If there is no tool and the screen needs a scene or an object, report the limitation and continue with an appropriate product preview built from existing components. Include the optional image prompt and intended asset path in the report, not on the page. Discuss connecting a service only if the user wants it; do not change their configuration or pause unrelated passes to add one.
 
 ## Prompt recipe
 
